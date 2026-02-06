@@ -32,6 +32,9 @@ type server struct {
 	latestRecvTime time.Time
 	colorsMu       sync.Mutex
 
+	deviceMu     sync.Mutex
+	reconnecting bool
+
 	recvCount atomic.Uint64
 	sendCount atomic.Uint64
 	dropCount atomic.Uint64
@@ -159,12 +162,19 @@ func (s *server) senderLoop(ch <-chan struct{}) {
 		deviceStart := time.Now()
 		var err error
 		if solid {
-			err = s.device.SetAllColor(s.applyBrightness([]bloqlight.RGB{colors[0]})[0])
+			err = s.writeWithRetry(func() error {
+				s.deviceMu.Lock()
+				defer s.deviceMu.Unlock()
+				return s.device.SetAllColor(s.applyBrightness([]bloqlight.RGB{colors[0]})[0])
+			})
 		} else {
-			err = s.device.SetLEDsFast(s.applyBrightness(colors))
+			err = s.writeWithRetry(func() error {
+				s.deviceMu.Lock()
+				defer s.deviceMu.Unlock()
+				return s.device.SetLEDsFast(s.applyBrightness(colors))
+			})
 		}
 		if err != nil {
-			log.Printf("[ERROR] Device write failed: %v", err)
 			continue
 		}
 		deviceTime := time.Since(deviceStart)
@@ -194,6 +204,50 @@ func (s *server) senderLoop(ch <-chan struct{}) {
 				deviceTime.Round(time.Microsecond), totalTime.Round(time.Microsecond))
 		}
 	}
+}
+
+func (s *server) handleDisconnect() bool {
+	s.deviceMu.Lock()
+	if s.reconnecting {
+		s.deviceMu.Unlock()
+		return false
+	}
+	s.reconnecting = true
+	s.deviceMu.Unlock()
+
+	s.paused.Store(true)
+
+	s.deviceMu.Lock()
+	s.device.Close()
+	s.deviceMu.Unlock()
+
+	log.Println("Device disconnected, attempting reconnect...")
+	for {
+		dev, err := bloqlight.Open()
+		if err == nil {
+			s.deviceMu.Lock()
+			s.device = dev
+			s.reconnecting = false
+			s.deviceMu.Unlock()
+			s.paused.Store(false)
+			log.Printf("Reconnected (firmware %s, %d LEDs)", dev.Firmware, dev.LEDCount)
+			return true
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// writeWithRetry attempts a device write, and if it fails, reconnects and retries once.
+func (s *server) writeWithRetry(fn func() error) error {
+	err := fn()
+	if err == nil {
+		return nil
+	}
+	log.Printf("[ERROR] Device write failed: %v", err)
+	if !s.handleDisconnect() {
+		return err
+	}
+	return fn()
 }
 
 // parseUDPColors parses raw RGB bytes from HyperHDR udpraw format.
@@ -320,8 +374,13 @@ func (s *server) cmdSet(args []string) string {
 
 	if arg == "off" {
 		s.paused.Store(true)
-		if err := s.device.TurnOff(); err != nil {
-			return fmt.Sprintf("error: %v", err)
+		err := s.writeWithRetry(func() error {
+			s.deviceMu.Lock()
+			defer s.deviceMu.Unlock()
+			return s.device.TurnOff()
+		})
+		if err != nil {
+			return "error: device disconnected, reconnecting..."
 		}
 		log.Printf("[CTRL] LEDs turned off")
 		return "ok"
@@ -337,8 +396,13 @@ func (s *server) cmdSet(args []string) string {
 	s.manualColor = color
 	s.manualColorMu.Unlock()
 
-	if err := s.device.SetAllColor(s.applyBrightness([]bloqlight.RGB{color})[0]); err != nil {
-		return fmt.Sprintf("error: %v", err)
+	err := s.writeWithRetry(func() error {
+		s.deviceMu.Lock()
+		defer s.deviceMu.Unlock()
+		return s.device.SetAllColor(s.applyBrightness([]bloqlight.RGB{color})[0])
+	})
+	if err != nil {
+		return "error: device disconnected, reconnecting..."
 	}
 	log.Printf("[CTRL] Set color RGB(%d,%d,%d)", color.R, color.G, color.B)
 	return "ok"
@@ -357,8 +421,13 @@ func (s *server) cmdMode(args []string) string {
 		s.manualColorMu.Unlock()
 
 		if color != nil {
-			if err := s.device.SetAllColor(s.applyBrightness([]bloqlight.RGB{*color})[0]); err != nil {
-				log.Printf("[CTRL] Failed to restore color: %v", err)
+			err := s.writeWithRetry(func() error {
+				s.deviceMu.Lock()
+				defer s.deviceMu.Unlock()
+				return s.device.SetAllColor(s.applyBrightness([]bloqlight.RGB{*color})[0])
+			})
+			if err != nil {
+				log.Printf("[CTRL] Failed to restore color: %v (reconnecting)", err)
 			} else {
 				log.Printf("[CTRL] Restored last HyperHDR color RGB(%d,%d,%d)", color.R, color.G, color.B)
 			}
@@ -394,12 +463,25 @@ func (s *server) cmdBrightness(args []string) string {
 	hyperColor := s.restoreColor
 	s.manualColorMu.Unlock()
 
+	var deviceErr error
 	if s.paused.Load() {
 		if manualColor.R > 0 || manualColor.G > 0 || manualColor.B > 0 {
-			s.device.SetAllColor(s.applyBrightness([]bloqlight.RGB{manualColor})[0])
+			deviceErr = s.writeWithRetry(func() error {
+				s.deviceMu.Lock()
+				defer s.deviceMu.Unlock()
+				return s.device.SetAllColor(s.applyBrightness([]bloqlight.RGB{manualColor})[0])
+			})
 		}
 	} else if hyperColor != nil {
-		s.device.SetAllColor(s.applyBrightness([]bloqlight.RGB{*hyperColor})[0])
+		deviceErr = s.writeWithRetry(func() error {
+			s.deviceMu.Lock()
+			defer s.deviceMu.Unlock()
+			return s.device.SetAllColor(s.applyBrightness([]bloqlight.RGB{*hyperColor})[0])
+		})
+	}
+
+	if deviceErr != nil {
+		return "ok (device disconnected, reconnecting...)"
 	}
 
 	return "ok"
@@ -415,8 +497,18 @@ func (s *server) cmdStatus() string {
 	color := s.manualColor
 	s.manualColorMu.Unlock()
 
-	return fmt.Sprintf("mode:%s udp:%d ctrl:%d leds:%d brightness:%d color:%d,%d,%d firmware:%s",
-		mode, s.port, controlPort, s.device.LEDCount, s.brightness.Load(), color.R, color.G, color.B, s.device.Firmware)
+	s.deviceMu.Lock()
+	ledCount := s.device.LEDCount
+	firmware := s.device.Firmware
+	reconnecting := s.reconnecting
+	s.deviceMu.Unlock()
+
+	status := fmt.Sprintf("mode:%s udp:%d ctrl:%d leds:%d brightness:%d color:%d,%d,%d firmware:%s",
+		mode, s.port, controlPort, ledCount, s.brightness.Load(), color.R, color.G, color.B, firmware)
+	if reconnecting {
+		status += " reconnecting:true"
+	}
+	return status
 }
 
 func (s *server) applyBrightness(colors []bloqlight.RGB) []bloqlight.RGB {

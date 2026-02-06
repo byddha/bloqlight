@@ -1,13 +1,14 @@
 // bloqlight is a UDP-to-HID bridge for the ROBOBLOQ USB Light Bar.
 //
 // Usage:
-//   bloqlight                     Start server (UDP + TCP control)
-//   bloqlight set R,G,B           Set color (e.g., 255,128,0)
-//   bloqlight set off             Turn off LEDs
-//   bloqlight mode hyper          Listen to HyperHDR
-//   bloqlight mode manual         Ignore HyperHDR
-//   bloqlight brightness [0-100]  Get or set brightness
-//   bloqlight status              Show status
+//
+//	bloqlight                     Start server (UDP + TCP control)
+//	bloqlight set R,G,B           Set color (e.g., 255,128,0)
+//	bloqlight set off             Turn off LEDs
+//	bloqlight mode hyper          Listen to HyperHDR
+//	bloqlight mode manual         Ignore HyperHDR
+//	bloqlight brightness [0-100]  Get or set brightness
+//	bloqlight status              Show status
 package main
 
 import (
@@ -52,33 +53,46 @@ func main() {
 		log.Fatal("Another instance is already running")
 	}
 
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+
 	var device *bloqlight.Device
-	var err error
-	if *iface >= 0 {
-		log.Printf("Opening interface %d...", *iface)
-		device, err = bloqlight.OpenInterface(*iface)
-	} else {
-		device, err = bloqlight.Open()
+	for {
+		var err error
+		if *iface >= 0 {
+			device, err = bloqlight.OpenInterface(*iface)
+		} else {
+			device, err = bloqlight.Open()
+		}
+		if err == nil {
+			break
+		}
+		log.Printf("Device not found (%v), retrying in 2s...", err)
+
+		select {
+		case <-sigCh:
+			log.Println("Shutting down...")
+			os.Exit(0)
+		case <-time.After(2 * time.Second):
+		}
 	}
-	if err != nil {
-		bloqlight.ListDevices()
-		log.Fatalf("Failed to open device: %v", err)
-	}
+
+	log.Printf("Device connected (firmware %s, %d LEDs)", device.Firmware, device.LEDCount)
+
+	srv := newServer(device, *port, *debug)
 
 	var cleanupOnce sync.Once
 	cleanup := func() {
 		cleanupOnce.Do(func() {
 			log.Println("Turning off LEDs...")
-			device.TurnOff()
-			device.Close()
+			srv.deviceMu.Lock()
+			srv.device.TurnOff()
+			srv.device.Close()
+			srv.deviceMu.Unlock()
 		})
 	}
 	defer cleanup()
 
-	log.Printf("Device connected (firmware %s, %d LEDs)", device.Firmware, device.LEDCount)
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sigCh
 		log.Println("Shutting down...")
@@ -86,7 +100,6 @@ func main() {
 		os.Exit(0)
 	}()
 
-	srv := newServer(device, *port, *debug)
 	if err := srv.run(); err != nil {
 		log.Printf("Server error: %v", err)
 	}
