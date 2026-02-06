@@ -25,7 +25,14 @@ import (
 	"bloqlight"
 )
 
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Println(version)
+		return
+	}
+
 	if len(os.Args) > 1 && os.Args[1][0] != '-' {
 		if err := runClient(os.Args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)

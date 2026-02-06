@@ -19,13 +19,16 @@ jobs:
 
       - name: Build
         run: |
-          GOOS=linux GOARCH=amd64 go build -o bloqlight-linux-amd64 ./cmd/bloqlight
-          GOOS=linux GOARCH=arm64 go build -o bloqlight-linux-arm64 ./cmd/bloqlight
-          GOOS=windows GOARCH=amd64 go build -o bloqlight-windows-amd64.exe ./cmd/bloqlight
+          VERSION=${GITHUB_REF_NAME#v}
+          LDFLAGS="-X main.version=${VERSION}"
+          GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o bloqlight-linux-amd64 ./cmd/bloqlight
+          GOOS=linux GOARCH=arm64 go build -ldflags "$LDFLAGS" -o bloqlight-linux-arm64 ./cmd/bloqlight
+          GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o bloqlight-windows-amd64.exe ./cmd/bloqlight
 
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
+          generate_release_notes: true
           files: |
             bloqlight-linux-amd64
             bloqlight-linux-arm64
