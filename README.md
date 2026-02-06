@@ -26,7 +26,15 @@ go build ./cmd/bloqlight
 
 Configure HyperHDR: LED Hardware → Type: `udpraw` → Port: `5568`
 
-Server flags: `-port` (UDP port), `-debug` (verbose logging), `-list` (show HID devices)
+<img width="1333" height="640" alt="image" src="https://github.com/user-attachments/assets/179c98a5-4446-4e40-92fc-d96d6014ba01" />
+
+Adapt LED Layout - For example for 34 inch variant:
+
+<img width="1438" height="1321" alt="image" src="https://github.com/user-attachments/assets/1433cb05-3372-4f44-a385-d76310c3fa0f" />
+
+
+
+Server flags: `-port` (UDP port), `-debug` (verbose logging), `-list` (show HID devices), `-version`
 
 ## udev rules (Linux)
 
