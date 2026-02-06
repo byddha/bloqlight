@@ -5,6 +5,3 @@ Description=Lightbar UDP-HID bridge for HyperHDR
 ExecStart=/usr/local/bin/bloqlight
 Restart=on-failure
 RestartSec=2
-
-[Install]
-WantedBy=multi-user.target

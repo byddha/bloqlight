@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/karalabe/hid"
 )
@@ -26,6 +27,11 @@ type Device struct {
 	MAC      string // Bluetooth MAC address
 }
 
+// openTimeout is the maximum time to wait for the HID open and device query.
+// hidapi opens hidraw devices with O_RDWR (no O_NONBLOCK), and reads block
+// until data is available. Both can hang if the device isn't ready at boot.
+const openTimeout = 5 * time.Second
+
 // Open connects to the first available light bar and queries its info.
 func Open() (*Device, error) {
 	devices := hid.Enumerate(VendorID, ProductID)
@@ -33,17 +39,35 @@ func Open() (*Device, error) {
 		return nil, ErrDeviceNotFound
 	}
 
-	dev, err := devices[0].Open()
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrDeviceNotFound, err)
+	type result struct {
+		dev *Device
+		err error
 	}
+	ch := make(chan result, 1)
+	go func() {
+		hidDev, err := devices[0].Open()
+		if err != nil {
+			ch <- result{nil, err}
+			return
+		}
+		d := &Device{dev: hidDev}
+		if err := d.queryDeviceInfo(); err != nil {
+			hidDev.Close()
+			ch <- result{nil, err}
+			return
+		}
+		ch <- result{d, nil}
+	}()
 
-	d := &Device{dev: dev}
-	if err := d.queryDeviceInfo(); err != nil {
-		dev.Close()
-		return nil, fmt.Errorf("failed to query device info: %w", err)
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrDeviceNotFound, r.err)
+		}
+		return r.dev, nil
+	case <-time.After(openTimeout):
+		return nil, fmt.Errorf("%w: open timed out (device not ready)", ErrDeviceNotFound)
 	}
-	return d, nil
 }
 
 // ListDevices prints info about all connected light bars to stdout.
@@ -64,11 +88,35 @@ func OpenInterface(interfaceNum int) (*Device, error) {
 	devices := hid.Enumerate(VendorID, ProductID)
 	for _, info := range devices {
 		if info.Interface == interfaceNum {
-			dev, err := info.Open()
-			if err != nil {
-				return nil, fmt.Errorf("%w: %v", ErrDeviceNotFound, err)
+			type result struct {
+				dev *Device
+				err error
 			}
-			return &Device{dev: dev}, nil
+			ch := make(chan result, 1)
+			go func() {
+				hidDev, err := info.Open()
+				if err != nil {
+					ch <- result{nil, err}
+					return
+				}
+				d := &Device{dev: hidDev}
+				if err := d.queryDeviceInfo(); err != nil {
+					hidDev.Close()
+					ch <- result{nil, err}
+					return
+				}
+				ch <- result{d, nil}
+			}()
+
+			select {
+			case r := <-ch:
+				if r.err != nil {
+					return nil, fmt.Errorf("%w: %v", ErrDeviceNotFound, r.err)
+				}
+				return r.dev, nil
+			case <-time.After(openTimeout):
+				return nil, fmt.Errorf("%w: open timed out (interface %d not ready)", ErrDeviceNotFound, interfaceNum)
+			}
 		}
 	}
 	return nil, fmt.Errorf("%w: interface %d not found", ErrDeviceNotFound, interfaceNum)

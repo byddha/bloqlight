@@ -1,6 +1,6 @@
 # bloqlight
 
-Driver for the ROBOBLOQ USB Light Bar. Reverse engineered the HID protocol to control LEDs directly — official software was not available on Linux. Works as a UDP-to-HID bridge for HyperHDR. Single binary acts as both server (receives from HyperHDR) and CLI client (control via TCP). Supports brightness control, manual color override, and seamless switching between HyperHDR and manual modes.
+Driver for the ROBOBLOQ USB Light Bar. Reverse engineered the HID protocol to control LEDs directly, needed protocol available in protocol.go; official software was not available on Linux. Works as a UDP-to-HID bridge for HyperHDR. Single binary acts as both server (receives from HyperHDR) and CLI client (control via TCP). Supports brightness control, manual color override, and seamless switching between HyperHDR and manual modes.
 
 Should work on Windows too (untested) if you want HyperHDR support there.
 
@@ -33,7 +33,7 @@ Server flags: `-port` (UDP port), `-debug` (verbose logging), `-list` (show HID 
 Create `/etc/udev/rules.d/99-bloqlight.rules`:
 
 ```
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="fe07", MODE="0666"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="fe07", MODE="0666", TAG+="systemd", ENV{SYSTEMD_WANTS}="bloqlight.service"
 SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="fe07", MODE="0666"
 ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="fe07", ATTR{bInterfaceNumber}=="01", ATTR{authorized}="0"
 ```
@@ -45,7 +45,7 @@ sudo udevadm control --reload-rules
 # unplug and replug device
 ```
 
-The last rule blocks the keyboard interface — the device tries to inject keystrokes (SUPER + R -> types link to official download page and enter) on connect.
+The `SYSTEMD_WANTS` line tells systemd to start bloqlight when the device appears. The last rule blocks the keyboard interface — the device tries to inject keystrokes (SUPER + R -> types link to official download page and enter) on connect.
 
 ## systemd setup
 
@@ -53,10 +53,11 @@ The last rule blocks the keyboard interface — the device tries to inject keyst
 sudo cp bloqlight /usr/local/bin/
 sudo cp contrib/systemd/bloqlight.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now bloqlight
 ```
+
+The service starts automatically when the device is plugged in (via the udev rule above). Do not make it auto run at startup by other means.
 
 ## Acknowledgments
 
-[singto1597/syncLight-Robobloq-Linux](https://github.com/singto1597/syncLight-Robobloq-Linux) -initial reference.
+[singto1597/syncLight-Robobloq-Linux](https://github.com/singto1597/syncLight-Robobloq-Linux) ;initial reference for ids, basic protocol.
 
