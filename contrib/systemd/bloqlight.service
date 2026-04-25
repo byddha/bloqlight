@@ -1,5 +1,7 @@
 [Unit]
 Description=Lightbar UDP-HID bridge for HyperHDR
+StartLimitIntervalSec=60
+StartLimitBurst=20
 
 [Service]
 ExecStart=/usr/local/bin/bloqlight

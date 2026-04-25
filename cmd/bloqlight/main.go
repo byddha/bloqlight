@@ -63,8 +63,12 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
+	// libusb's hidapi keeps a process-global context; if the first open races
+	// the boot-time udev/USBFS cascade and fails, the same context stays stuck.
+	// Bound retries here and let systemd respawn us with a fresh context.
+	const maxOpenAttempts = 3
 	var device *bloqlight.Device
-	for {
+	for attempt := 1; ; attempt++ {
 		var err error
 		if *iface >= 0 {
 			device, err = bloqlight.OpenInterface(*iface)
@@ -74,7 +78,10 @@ func main() {
 		if err == nil {
 			break
 		}
-		log.Printf("Device not found (%v), retrying in 2s...", err)
+		if attempt >= maxOpenAttempts {
+			log.Fatalf("Device not found after %d attempts (%v); exiting so systemd restarts with a fresh libusb context", attempt, err)
+		}
+		log.Printf("Device not found (%v), retrying in 2s (attempt %d/%d)...", err, attempt, maxOpenAttempts)
 
 		select {
 		case <-sigCh:
